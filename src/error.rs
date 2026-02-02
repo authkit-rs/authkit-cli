@@ -30,6 +30,15 @@ pub enum CliError {
     #[error("Operation cancelled by user")]
     Cancelled,
 
+    #[error("Configuration file not found: {0}\n\nRun 'authkit init' to create one.")]
+    ConfigNotFound(String),
+
+    #[error("Configuration error: {0}")]
+    ConfigParse(String),
+
+    #[error("Feature not enabled: {0}")]
+    FeatureNotEnabled(String),
+
     #[error("{0}")]
     Other(String),
 }

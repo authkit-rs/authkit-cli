@@ -5,7 +5,14 @@ use crate::cli::DestroyArgs;
 use crate::database::Database;
 use crate::error::{CliError, CliResult};
 
-const AUTHKIT_TABLES: &[&str] = &["tokens", "sessions", "users", "_authkit_migrations"];
+/// AuthKit tables in order they should be dropped (respecting foreign key constraints)
+const AUTHKIT_TABLES: &[&str] = &[
+    "verification",
+    "sessions",
+    "accounts",
+    "users",
+    "_authkit_migrations",
+];
 
 pub async fn run(args: DestroyArgs) -> CliResult<()> {
     let db = Database::connect(&args.db_url).await?;

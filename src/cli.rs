@@ -15,7 +15,10 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Generate migration SQL files
+    /// Initialize AuthKit configuration file
+    Init(InitArgs),
+
+    /// Generate migration SQL files based on enabled features
     Generate(GenerateArgs),
 
     /// Apply pending migrations to the database
@@ -32,10 +35,25 @@ pub enum Commands {
 }
 
 #[derive(Parser)]
-pub struct GenerateArgs {
+pub struct InitArgs {
     /// Target database type
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value = "postgres")]
     pub db: DatabaseType,
+
+    /// Output path for config file
+    #[arg(long, default_value = "./authkit.toml")]
+    pub output: String,
+
+    /// Overwrite existing config file
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Parser)]
+pub struct GenerateArgs {
+    /// Path to authkit.toml config file
+    #[arg(long, default_value = "./authkit.toml")]
+    pub config: String,
 
     /// Output directory for migration files
     #[arg(long, default_value = "./migrations")]
@@ -52,6 +70,10 @@ pub struct MigrateArgs {
     #[arg(long, env = "AUTHKIT_DATABASE_URL")]
     pub db_url: String,
 
+    /// Path to authkit.toml config file
+    #[arg(long, default_value = "./authkit.toml")]
+    pub config: String,
+
     /// Show what would be executed without applying
     #[arg(long)]
     pub dry_run: bool,
@@ -62,6 +84,10 @@ pub struct StatusArgs {
     /// Database connection URL
     #[arg(long, env = "AUTHKIT_DATABASE_URL")]
     pub db_url: String,
+
+    /// Path to authkit.toml config file
+    #[arg(long, default_value = "./authkit.toml")]
+    pub config: String,
 }
 
 #[derive(Parser)]
@@ -77,7 +103,11 @@ pub struct DestroyArgs {
 
 #[derive(Parser)]
 pub struct SchemaArgs {
-    /// Target database type (for template schema)
+    /// Path to authkit.toml config file
+    #[arg(long, default_value = "./authkit.toml")]
+    pub config: Option<String>,
+
+    /// Target database type (overrides config)
     #[arg(long, value_enum)]
     pub db: Option<DatabaseType>,
 
@@ -90,10 +120,19 @@ pub struct SchemaArgs {
     pub db_url: Option<String>,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum, Debug, PartialEq, Eq)]
 pub enum DatabaseType {
     Sqlite,
     Postgres,
+}
+
+impl std::fmt::Display for DatabaseType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DatabaseType::Sqlite => write!(f, "sqlite"),
+            DatabaseType::Postgres => write!(f, "postgres"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
