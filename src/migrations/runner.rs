@@ -2,8 +2,9 @@ use sqlx::{AnyPool, Row};
 use std::collections::{HashMap, HashSet};
 
 use crate::cli::DatabaseType;
+use crate::config::AuthKitConfig;
 use crate::error::{CliError, CliResult};
-use crate::migrations::{get_migrations, AppliedMigration, Migration, MigrationState};
+use crate::migrations::{get_migrations_from_config, AppliedMigration, Migration, MigrationState};
 
 /// Migration runner
 pub struct MigrationRunner<'a> {
@@ -71,7 +72,7 @@ impl<'a> MigrationRunner<'a> {
         Ok(migrations)
     }
 
-    /// Get pending migrations
+    /// Get pending migrations based on config
     pub fn get_pending_migrations<'m>(
         &self,
         available: &'m [Migration],
@@ -138,11 +139,17 @@ impl<'a> MigrationRunner<'a> {
         // Execute each statement individually (important for PostgreSQL)
         for statement in migration.up_sql.split(';') {
             let trimmed = statement.trim();
-            if trimmed.is_empty() || trimmed.starts_with("--") {
+            if trimmed.is_empty() {
                 continue;
             }
 
-            sqlx::query(trimmed).execute(self.pool).await.map_err(|e| {
+            // Strip leading comment lines to get the actual SQL statement
+            let sql = Self::strip_leading_comments(trimmed);
+            if sql.is_empty() {
+                continue;
+            }
+
+            sqlx::query(&sql).execute(self.pool).await.map_err(|e| {
                 CliError::Migration(format!(
                     "Failed to execute migration {}: {}",
                     migration.name, e
@@ -173,12 +180,33 @@ impl<'a> MigrationRunner<'a> {
         Ok(())
     }
 
-    /// Run all pending migrations
+    /// Strip leading comment lines from a SQL statement
+    /// Comments start with "--" and continue to end of line
+    fn strip_leading_comments(sql: &str) -> String {
+        let mut lines: Vec<&str> = Vec::new();
+        let mut found_non_comment = false;
+
+        for line in sql.lines() {
+            let trimmed_line = line.trim();
+            if !found_non_comment {
+                // Skip lines that are empty or are comments
+                if trimmed_line.is_empty() || trimmed_line.starts_with("--") {
+                    continue;
+                }
+                found_non_comment = true;
+            }
+            lines.push(line);
+        }
+
+        lines.join("\n").trim().to_string()
+    }
+
+    /// Run all pending migrations based on config
     #[allow(dead_code)]
-    pub async fn run_pending(&self) -> CliResult<Vec<String>> {
+    pub async fn run_pending(&self, config: &AuthKitConfig) -> CliResult<Vec<String>> {
         self.ensure_migrations_table().await?;
 
-        let available = get_migrations(self.db_type);
+        let available = get_migrations_from_config(config);
         let applied = self.get_applied_migrations().await?;
         let pending = self.get_pending_migrations(&available, &applied);
 
@@ -194,8 +222,8 @@ impl<'a> MigrationRunner<'a> {
 
     /// Verify checksums of applied migrations
     #[allow(dead_code)]
-    pub async fn verify_checksums(&self) -> CliResult<()> {
-        let available = get_migrations(self.db_type);
+    pub async fn verify_checksums(&self, config: &AuthKitConfig) -> CliResult<()> {
+        let available = get_migrations_from_config(config);
         let applied = self.get_applied_migrations().await?;
 
         let available_map: HashMap<u32, &Migration> =
@@ -214,5 +242,111 @@ impl<'a> MigrationRunner<'a> {
         }
 
         Ok(())
+    }
+
+    /// Rollback a single migration
+    #[allow(dead_code)]
+    pub async fn rollback_migration(&self, migration: &Migration) -> CliResult<()> {
+        // Execute each statement individually
+        for statement in migration.down_sql.split(';') {
+            let trimmed = statement.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // Strip leading comment lines to get the actual SQL statement
+            let sql = Self::strip_leading_comments(trimmed);
+            if sql.is_empty() {
+                continue;
+            }
+
+            sqlx::query(&sql).execute(self.pool).await.map_err(|e| {
+                CliError::Migration(format!(
+                    "Failed to rollback migration {}: {}",
+                    migration.name, e
+                ))
+            })?;
+        }
+
+        // Remove the migration record
+        self.remove_migration_record(migration.version).await?;
+
+        Ok(())
+    }
+
+    /// Remove a migration record from the tracking table
+    #[allow(dead_code)]
+    async fn remove_migration_record(&self, version: u32) -> CliResult<()> {
+        sqlx::query("DELETE FROM _authkit_migrations WHERE version = $1")
+            .bind(version as i32)
+            .execute(self.pool)
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_leading_comments_simple() {
+        let sql = "-- This is a comment\nCREATE TABLE users (id TEXT)";
+        let result = MigrationRunner::strip_leading_comments(sql);
+        assert_eq!(result, "CREATE TABLE users (id TEXT)");
+    }
+
+    #[test]
+    fn test_strip_leading_comments_multiple_comments() {
+        let sql = "-- Comment 1\n-- Comment 2\n-- Comment 3\nCREATE TABLE users (id TEXT)";
+        let result = MigrationRunner::strip_leading_comments(sql);
+        assert_eq!(result, "CREATE TABLE users (id TEXT)");
+    }
+
+    #[test]
+    fn test_strip_leading_comments_with_blank_lines() {
+        let sql = "-- Comment\n\n-- Another comment\n\nCREATE TABLE users (id TEXT)";
+        let result = MigrationRunner::strip_leading_comments(sql);
+        assert_eq!(result, "CREATE TABLE users (id TEXT)");
+    }
+
+    #[test]
+    fn test_strip_leading_comments_no_comments() {
+        let sql = "CREATE TABLE users (id TEXT)";
+        let result = MigrationRunner::strip_leading_comments(sql);
+        assert_eq!(result, "CREATE TABLE users (id TEXT)");
+    }
+
+    #[test]
+    fn test_strip_leading_comments_only_comments() {
+        let sql = "-- Just a comment\n-- Another comment";
+        let result = MigrationRunner::strip_leading_comments(sql);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_leading_comments_preserves_inline_comments() {
+        let sql = "-- Leading comment\nCREATE TABLE users (\n    id TEXT, -- inline comment\n    name TEXT\n)";
+        let result = MigrationRunner::strip_leading_comments(sql);
+        assert_eq!(
+            result,
+            "CREATE TABLE users (\n    id TEXT, -- inline comment\n    name TEXT\n)"
+        );
+    }
+
+    #[test]
+    fn test_strip_leading_comments_multiline_statement() {
+        let sql = r#"-- Accounts table: Links authentication providers to users
+-- For email/password, provider = 'credential' and password_hash is set
+-- For OAuth (future), provider = 'google'/'github'/etc
+CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL
+)"#;
+        let result = MigrationRunner::strip_leading_comments(sql);
+        assert!(result.starts_with("CREATE TABLE IF NOT EXISTS accounts"));
+        assert!(result.contains("id TEXT PRIMARY KEY"));
     }
 }

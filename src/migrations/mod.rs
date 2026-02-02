@@ -1,6 +1,7 @@
 pub mod runner;
 
-use crate::cli::DatabaseType;
+use crate::config::AuthKitConfig;
+use crate::schema;
 
 /// A single migration
 #[derive(Clone)]
@@ -43,136 +44,11 @@ impl MigrationState {
     }
 }
 
-/// Get all migrations for a database type
-pub fn get_migrations(db_type: DatabaseType) -> Vec<Migration> {
-    match db_type {
-        DatabaseType::Sqlite => sqlite_migrations(),
-        DatabaseType::Postgres => postgres_migrations(),
-    }
-}
-
-fn sqlite_migrations() -> Vec<Migration> {
-    let migrations = vec![
-        Migration {
-            version: 1,
-            name: "create_users_table".to_string(),
-            up_sql: include_str!("sqlite/001_create_users_table.up.sql"),
-            down_sql: include_str!("sqlite/001_create_users_table.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 2,
-            name: "create_sessions_table".to_string(),
-            up_sql: include_str!("sqlite/002_create_sessions_table.up.sql"),
-            down_sql: include_str!("sqlite/002_create_sessions_table.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 3,
-            name: "create_tokens_table".to_string(),
-            up_sql: include_str!("sqlite/003_create_tokens_table.up.sql"),
-            down_sql: include_str!("sqlite/003_create_tokens_table.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 4,
-            name: "create_indexes".to_string(),
-            up_sql: include_str!("sqlite/004_create_indexes.up.sql"),
-            down_sql: include_str!("sqlite/004_create_indexes.down.sql"),
-            checksum: String::new(),
-        },
-    ];
-
-    migrations
-        .into_iter()
-        .map(|mut m| {
-            m.checksum = compute_checksum(m.up_sql);
-            m
-        })
-        .collect()
-}
-
-fn postgres_migrations() -> Vec<Migration> {
-    let migrations = vec![
-        Migration {
-            version: 1,
-            name: "create_users_table".to_string(),
-            up_sql: include_str!("postgres/001_create_users_table.up.sql"),
-            down_sql: include_str!("postgres/001_create_users_table.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 2,
-            name: "create_sessions_table".to_string(),
-            up_sql: include_str!("postgres/002_create_sessions_table.up.sql"),
-            down_sql: include_str!("postgres/002_create_sessions_table.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 3,
-            name: "create_tokens_table".to_string(),
-            up_sql: include_str!("postgres/003_create_tokens_table.up.sql"),
-            down_sql: include_str!("postgres/003_create_tokens_table.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 4,
-            name: "create_users_email_index".to_string(),
-            up_sql: include_str!("postgres/004_create_users_email_index.up.sql"),
-            down_sql: include_str!("postgres/004_create_users_email_index.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 5,
-            name: "create_sessions_user_id_index".to_string(),
-            up_sql: include_str!("postgres/005_create_sessions_user_id_index.up.sql"),
-            down_sql: include_str!("postgres/005_create_sessions_user_id_index.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 6,
-            name: "create_sessions_expires_at_index".to_string(),
-            up_sql: include_str!("postgres/006_create_sessions_expires_at_index.up.sql"),
-            down_sql: include_str!("postgres/006_create_sessions_expires_at_index.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 7,
-            name: "create_tokens_user_id_index".to_string(),
-            up_sql: include_str!("postgres/007_create_tokens_user_id_index.up.sql"),
-            down_sql: include_str!("postgres/007_create_tokens_user_id_index.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 8,
-            name: "create_tokens_hash_index".to_string(),
-            up_sql: include_str!("postgres/008_create_tokens_hash_index.up.sql"),
-            down_sql: include_str!("postgres/008_create_tokens_hash_index.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 9,
-            name: "create_tokens_expires_at_index".to_string(),
-            up_sql: include_str!("postgres/009_create_tokens_expires_at_index.up.sql"),
-            down_sql: include_str!("postgres/009_create_tokens_expires_at_index.down.sql"),
-            checksum: String::new(),
-        },
-        Migration {
-            version: 10,
-            name: "create_tokens_type_index".to_string(),
-            up_sql: include_str!("postgres/010_create_tokens_type_index.up.sql"),
-            down_sql: include_str!("postgres/010_create_tokens_type_index.down.sql"),
-            checksum: String::new(),
-        },
-    ];
-
-    migrations
-        .into_iter()
-        .map(|mut m| {
-            m.checksum = compute_checksum(m.up_sql);
-            m
-        })
-        .collect()
+/// Get migrations for enabled features from config
+pub fn get_migrations_from_config(config: &AuthKitConfig) -> Vec<Migration> {
+    let db_type = config.database_type().expect("Invalid database type");
+    let features = config.enabled_features();
+    schema::get_migrations_for_features(&features, db_type)
 }
 
 /// Compute SHA-256 checksum for migration content
@@ -181,4 +57,27 @@ pub fn compute_checksum(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_checksum() {
+        let checksum1 = compute_checksum("CREATE TABLE users");
+        let checksum2 = compute_checksum("CREATE TABLE users");
+        let checksum3 = compute_checksum("CREATE TABLE sessions");
+
+        assert_eq!(checksum1, checksum2);
+        assert_ne!(checksum1, checksum3);
+        assert_eq!(checksum1.len(), 64); // SHA-256 produces 64 hex chars
+    }
+
+    #[test]
+    fn test_migration_state_str() {
+        assert_eq!(MigrationState::Applied.as_str(), "Applied");
+        assert_eq!(MigrationState::Pending.as_str(), "Pending");
+        assert_eq!(MigrationState::Missing.as_str(), "Missing");
+    }
 }

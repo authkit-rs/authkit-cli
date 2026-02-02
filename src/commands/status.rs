@@ -3,15 +3,16 @@ use colored::Colorize;
 use tabled::{Table, Tabled};
 
 use crate::cli::StatusArgs;
+use crate::config::AuthKitConfig;
 use crate::database::Database;
 use crate::error::CliResult;
-use crate::migrations::{get_migrations, runner::MigrationRunner, MigrationState};
+use crate::migrations::{get_migrations_from_config, runner::MigrationRunner, MigrationState};
 
 #[derive(Tabled)]
 struct MigrationRow {
     #[tabled(rename = "#")]
     version: String,
-    #[tabled(rename = "Migration")]
+    #[tabled(rename = "Feature")]
     name: String,
     #[tabled(rename = "Applied At")]
     applied_at: String,
@@ -20,13 +21,28 @@ struct MigrationRow {
 }
 
 pub async fn run(args: StatusArgs) -> CliResult<()> {
+    // Load configuration
+    let config = AuthKitConfig::load(&args.config)?;
+    let db_type = config.database_type()?;
+
+    println!();
+    println!("Configuration: {}", args.config.cyan());
+    println!();
+
+    // Show enabled features
+    println!("Enabled features:");
+    for feature in config.enabled_features() {
+        println!("  {} {}", "✓".green(), feature.display_name());
+    }
+    println!();
+
     let db = Database::connect(&args.db_url).await?;
     let runner = MigrationRunner::new(&db.pool, db.db_type);
 
     // Check if migrations table exists
     runner.ensure_migrations_table().await?;
 
-    let available = get_migrations(db.db_type);
+    let available = get_migrations_from_config(&config);
     let applied = runner.get_applied_migrations().await?;
     let statuses = runner.get_migration_status(&available, &applied);
 
@@ -35,13 +51,21 @@ pub async fn run(args: StatusArgs) -> CliResult<()> {
         crate::cli::DatabaseType::Postgres => "PostgreSQL",
     };
 
-    println!();
     println!("Database: {} ({})", args.db_url, db_type_name);
+    println!("Config Database Type: {}", db_type.to_string().cyan());
     println!(
         "Schema Version: {}",
         applied.last().map(|m| m.version).unwrap_or(0)
     );
     println!();
+
+    if statuses.is_empty() {
+        println!(
+            "{} No migrations defined for enabled features",
+            "!".yellow()
+        );
+        return Ok(());
+    }
 
     let rows: Vec<MigrationRow> = statuses
         .iter()
@@ -79,10 +103,26 @@ pub async fn run(args: StatusArgs) -> CliResult<()> {
         .filter(|(_, _, state, _)| *state == MigrationState::Pending)
         .count();
 
-    if pending_count == 0 {
+    let missing_count = statuses
+        .iter()
+        .filter(|(_, _, state, _)| *state == MigrationState::Missing)
+        .count();
+
+    if pending_count == 0 && missing_count == 0 {
         println!("{} Database is up to date", "✓".green());
     } else {
-        println!("{} {} pending migration(s)", "!".yellow(), pending_count);
+        if pending_count > 0 {
+            println!("{} {} pending migration(s)", "!".yellow(), pending_count);
+            println!("  Run {} to apply", "authkit migrate --db-url <URL>".cyan());
+        }
+        if missing_count > 0 {
+            println!(
+                "{} {} migration(s) in database not found in config",
+                "!".red(),
+                missing_count
+            );
+            println!("  This may indicate features were disabled or migrations were modified");
+        }
     }
 
     Ok(())

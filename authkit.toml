@@ -1,0 +1,6 @@
+[database]
+type = "postgres"
+
+[features]
+email_password = true
+email_verification = true

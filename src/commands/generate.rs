@@ -4,26 +4,40 @@ use std::path::Path;
 use colored::Colorize;
 
 use crate::cli::GenerateArgs;
+use crate::config::AuthKitConfig;
 use crate::error::{CliError, CliResult};
-use crate::migrations::get_migrations;
+use crate::migrations::get_migrations_from_config;
 
 pub async fn run(args: GenerateArgs) -> CliResult<()> {
-    let migrations = get_migrations(args.db);
-    let db_name = match args.db {
-        crate::cli::DatabaseType::Sqlite => "sqlite",
-        crate::cli::DatabaseType::Postgres => "postgres",
-    };
+    // Load configuration
+    let config = AuthKitConfig::load(&args.config)?;
+    let db_type = config.database_type()?;
 
-    let output_dir = Path::new(&args.output).join(db_name);
+    let db_name = db_type.to_string();
+    let migrations = get_migrations_from_config(&config);
+
+    if migrations.is_empty() {
+        println!("{} No features enabled. Nothing to generate.", "!".yellow());
+        return Ok(());
+    }
+
+    let output_dir = Path::new(&args.output);
 
     // Create output directory
-    fs::create_dir_all(&output_dir)?;
+    fs::create_dir_all(output_dir)?;
 
     println!(
         "Generating {} migrations to {}",
         db_name,
         output_dir.display()
     );
+    println!();
+
+    // Show enabled features
+    println!("Enabled features:");
+    for feature in config.enabled_features() {
+        println!("  {} {}", "✓".green(), feature.display_name());
+    }
     println!();
 
     for migration in &migrations {
@@ -53,9 +67,16 @@ pub async fn run(args: GenerateArgs) -> CliResult<()> {
 
     println!();
     println!(
-        "{} Generated {} migration files",
+        "{} Generated {} migration files ({} features)",
         "✓".green(),
-        migrations.len() * 2
+        migrations.len() * 2,
+        migrations.len()
+    );
+    println!();
+    println!("Next steps:");
+    println!(
+        "  Run {} to apply migrations",
+        "authkit migrate --db-url <URL>".cyan()
     );
 
     Ok(())
