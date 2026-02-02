@@ -6,7 +6,8 @@ use crate::cli::MigrateArgs;
 use crate::config::AuthKitConfig;
 use crate::database::Database;
 use crate::error::CliResult;
-use crate::migrations::{get_migrations_from_config, runner::MigrationRunner};
+use crate::migrations::runner::MigrationRunner;
+use crate::schema;
 
 pub async fn run(args: MigrateArgs) -> CliResult<()> {
     // Load configuration
@@ -43,8 +44,9 @@ pub async fn run(args: MigrateArgs) -> CliResult<()> {
     // Ensure migrations table exists
     runner.ensure_migrations_table().await?;
 
-    // Get migration status
-    let available = get_migrations_from_config(&config);
+    // Get migration status - use actual database type, not config type
+    let features = config.enabled_features();
+    let available = schema::get_migrations_for_features(&features, db.db_type);
     let applied = runner.get_applied_migrations().await?;
     let pending = runner.get_pending_migrations(&available, &applied);
 
